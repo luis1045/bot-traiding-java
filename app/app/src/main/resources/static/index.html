@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bot de grillas BTCUSDT</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+
+<body>
+    <div id="app" v-cloak>
+        <header class="topbar">
+            <div class="brand">
+                <span class="logo">&#8383;</span>
+                <div>
+                    <h1>Bot de grillas BTCUSDT</h1>
+                    <p class="muted">Modo manual &middot; spot &middot; Vue 3 &middot;
+                        <a href="/swagger-ui.html" target="_blank" style="color:var(--accent)">Swagger UI</a>
+                    </p>
+                </div>
+            </div>
+            <div class="status">
+                <span class="pill" :class="botRunning ? 'on' : 'off'">
+                    bot {{ botRunning ? 'en marcha' : 'detenido' }}
+                </span>
+                <span class="pill" :class="botRunning ? 'on' : 'off'">feed {{ feed }}</span>
+                <span class="pill off">precio {{ lastPrice ? usdt(lastPrice) : '—' }}</span>
+                <span class="pill off">sets {{ activeSets }}</span>
+                <span class="pill" :class="alerts.length ? 'exhausted' : 'off'">
+                    alertas {{ alerts.length }}
+                </span>
+                <button class="btn" @click="startBot" :disabled="botRunning">Arrancar feed</button>
+                <button class="btn ghost" @click="stopBot" :disabled="!botRunning">Detener</button>
+                <button class="btn small ghost" @click="toggleTheme"
+                        :title="theme === 'dark' ? 'Cambiar al tema claro' : 'Cambiar al tema oscuro'">
+                    {{ theme === 'dark' ? '☀ Tema claro' : '☾ Tema oscuro' }}
+                </button>
+            </div>
+        </header>
+
+        <main>
+            <!-- ----------------------------- alertas pendientes ----------------------------- -->
+            <section class="card alerts-card" v-if="alerts.length">
+                <h2>
+                    Alertas pendientes
+                    <span class="count-badge">{{ alerts.length }}</span>
+                </h2>
+                <p class="muted">
+                    El precio entr&oacute; en una zona de la grilla. Haz la operaci&oacute;n en Binance y
+                    registra aqu&iacute; la cantidad, el precio y (en las ventas) el profit; o descarta el aviso.
+                </p>
+                <div class="alert-list">
+                    <div v-for="a in alerts" :key="a.id" class="alert-row"
+                         :class="a.type === 'BUY' ? 'buy' : 'sell'">
+                        <div class="alert-main">
+                            <div class="alert-title">
+                                <span class="badge" :class="a.type === 'BUY' ? 'buy' : 'sell'">
+                                    {{ a.type === 'BUY' ? 'ZONA DE COMPRA' : 'ZONA DE VENTA' }}
+                                </span>
+                                <strong>Conjunto #{{ a.gridSetId }} &middot; Nivel {{ a.levelIndex }}</strong>
+                                <span class="pill off">{{ a.symbol }}</span>
+                            </div>
+                            <div class="muted">
+                                Banda {{ usdt(a.lowerPrice) }} &ndash; {{ usdt(a.upperPrice) }} USDT &middot;
+                                disparo {{ usdt(a.triggerPrice) }} &middot;
+                                sugerido {{ btc(a.suggestedQuantity) }} BTC @ {{ usdt(a.suggestedPrice) }}
+                                <span v-if="a.type === 'SELL' && a.entryPrice">
+                                    &middot; entrada {{ usdt(a.entryPrice) }}
+                                </span>
+                                &middot; {{ localDateTime(a.createdAt) }}
+                            </div>
+                        </div>
+                        <div class="alert-actions">
+                            <button class="btn small" @click="openAlert(a)">
+                                {{ a.type === 'BUY' ? 'Registrar compra' : 'Registrar venta' }}
+                            </button>
+                            <button class="btn small ghost danger" @click="dismissAlert(a)">Descartar</button>
+                        </div>
+
+                        <form v-if="af.id === a.id" class="alert-form" @submit.prevent="submitAlert">
+                            <div class="row-3">
+                                <div>
+                                    <label>Cantidad BTC</label>
+                                    <input type="number" step="0.00000001" min="0"
+                                           v-model.number="af.quantity" required>
+                                </div>
+                                <div>
+                                    <label>{{ a.type === 'BUY' ? 'Precio comprado' : 'Precio vendido' }} (USDT)</label>
+                                    <input type="number" step="0.01" min="0"
+                                           v-model.number="af.price" required>
+                                </div>
+                                <div v-if="a.type === 'SELL'">
+                                    <label>Profit USDT</label>
+                                    <input type="number" step="0.01" v-model.number="af.pnlUsdt"
+                                           @input="onPnlInput">
+                                </div>
+                                <div v-else>
+                                    <label>Coste estimado (USDT)</label>
+                                    <input type="text" readonly
+                                           :value="usdt(Number(af.quantity) * Number(af.price) * (1 + Number(a.feeRate || 0)))">
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div>
+                                    <label>Estado / nota (opcional)</label>
+                                    <input type="text" maxlength="255" v-model="af.note"
+                                           placeholder="p.ej. ejecutada en Binance">
+                                </div>
+                                <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+                                    <button type="submit" class="btn" :disabled="af.saving">
+                                        {{ af.saving ? 'Guardando…' : (a.type === 'BUY' ? 'Registrar compra' : 'Registrar venta') }}
+                                    </button>
+                                    <button type="button" class="btn small ghost" @click="closeAlert">Cancelar</button>
+                                </div>
+                            </div>
+                            <p class="muted" v-if="a.type === 'SELL'">
+                                El profit se estima con el precio de entrada, la cantidad y las comisiones;
+                                puedes ajustarlo antes de guardar.
+                            </p>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <section class="grid2">
+                <!-- ----------------------------- crear ----------------------------- -->
+                <div class="card">
+                    <h2>Crear conjunto de niveles</h2>
+                    <form @submit.prevent="createGrid" autocomplete="off">
+                        <div class="row">
+                            <div>
+                                <label>Piso (USDT)</label>
+                                <input type="number" step="0.01" min="0" v-model.number="form.floorPrice" required>
+                            </div>
+                            <div>
+                                <label>Techo (USDT)</label>
+                                <input type="number" step="0.01" min="0" v-model.number="form.ceilPrice" required>
+                            </div>
+                        </div>
+
+                        <div class="row-3">
+                            <div>
+                                <label>Niveles (n)</label>
+                                <input type="number" min="1" max="1000" v-model.number="form.levelCount" required>
+                            </div>
+                            <div>
+                                <label>BTC a repartir</label>
+                                <input type="number" step="0.00000001" min="0" v-model.number="form.btcInventory" required>
+                            </div>
+                            <div>
+                                <label>Reserva USDT</label>
+                                <input type="number" step="0.01" min="0" v-model.number="form.usdtReserve">
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div>
+                                <label>Comisi&oacute;n (tanto por uno)</label>
+                                <input type="number" step="0.0001" min="0" v-model.number="form.feeRate">
+                            </div>
+                            <div>
+                                <label>Zona de bandas</label>
+                                <input type="text" :value="bandHint" readonly placeholder="—">
+                            </div>
+                        </div>
+
+                        <div class="pct-head">
+                            <label style="margin:0">% de BTC por nivel</label>
+                            <span class="pct-sum" :class="formSumOk ? 'ok' : 'bad'">suma {{ formSum.toFixed(2) }}%</span>
+                        </div>
+                        <div class="pct-grid">
+                            <input v-for="(p, i) in form.percents" :key="i" type="number" step="any" min="0"
+                                   class="pct" v-model.number="form.percents[i]">
+                        </div>
+                        <div class="actions">
+                            <button type="button" class="btn small ghost" @click="equalPercents">Reparto equitativo</button>
+                            <button type="button" class="btn small ghost" @click="rampPercents">Rampa ascendente</button>
+                        </div>
+
+                        <div class="check">
+                            <input type="checkbox" id="startInBtc" v-model="form.startInBtc">
+                            <label for="startInBtc" style="margin:0">El conjunto ya posee el BTC (empieza sosteniendo)</label>
+                        </div>
+
+                        <div class="actions">
+                            <button type="submit" class="btn">Crear conjunto</button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- ----------------------------- lista ----------------------------- -->
+                <div class="card">
+                    <h2>Conjuntos</h2>
+                    <div id="sets">
+                        <p class="muted" v-if="!sets.length">A&uacute;n no hay conjuntos. Crea el primero a la izquierda.</p>
+                        <div v-for="s in sets" :key="s.id" class="set-row"
+                             :class="{ selected: s.id === selectedId }" @click="selectSet(s.id)">
+                            <span class="id">#{{ s.id }}</span>
+                            <div class="info">
+                                <div class="range">{{ usdt(s.floorPrice) }} &ndash; {{ usdt(s.ceilPrice) }} USDT</div>
+                                <div class="muted">
+                                    {{ s.levelCount }} niveles &middot; {{ btc(s.btcInventory) }} BTC &middot;
+                                    {{ usdt(s.usdtReserve) }} USDT
+                                </div>
+                            </div>
+                            <span class="pill" :class="statusClass(s.status)">{{ s.status }}</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ----------------------------- precios ----------------------------- -->
+            <section class="grid2">
+                <div class="card">
+                    <h2>Precio de Binance (p&uacute;blico)</h2>
+                    <p class="muted">
+                        &Uacute;ltimo precio spot de <strong>{{ marketSymbol }}</strong> tomado por el backend desde
+                        la API p&uacute;blica y gratuita de Binance (sin claves).
+                        <span v-if="market.error" style="color:var(--red)"> &middot; error: {{ market.error }}</span>
+                    </p>
+                    <div class="cards" style="margin-top:12px">
+                        <div class="metric">
+                            <div class="label">Precio BTC</div>
+                            <div class="value btc">{{ market.price ? usdt(market.price) : '—' }}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="label">Actualizado</div>
+                            <div class="value" style="font-size:14px">{{ market.time ? localTime(market.time) : '—' }}</div>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button class="btn blue" @click="injectMarketPrice" :disabled="!market.price">
+                            Inyectar como tick
+                        </button>
+                        <button class="btn small ghost" @click="loadMarketPrice">Actualizar</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>Simulador de precio</h2>
+                    <p class="muted">Inyecta un precio manual para simular el mercado sin esperar al feed.</p>
+                    <div class="row" style="margin-top:10px">
+                        <div>
+                            <label>Precio (USDT)</label>
+                            <input type="number" step="0.01" min="0" v-model.number="tickPrice">
+                        </div>
+                        <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+                            <button class="btn blue" @click="sendTick(tickPrice)">Enviar tick</button>
+                            <button v-for="p in quickTicks" :key="p" class="btn small ghost" @click="sendTick(p)">{{ p }}</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ----------------------------- detalle ----------------------------- -->
+            <section class="card" v-if="detail.set && detail.pnl && detail.report">
+                <div class="detail-head">
+                    <div>
+                        <h2 style="margin:0">Conjunto #{{ detail.set.id }}</h2>
+                        <p class="muted">{{ rangeText }}</p>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <span class="pill" :class="statusClass(detail.set.status)">{{ detail.set.status }}</span>
+                        <button class="btn small ghost danger" @click="deleteSet(detail.set.id)">Eliminar</button>
+                    </div>
+                </div>
+
+                <div class="cards">
+                    <div class="metric">
+                        <div class="label">PnL USDT</div>
+                        <div class="value" :class="signClass(detail.pnl.pnlUsdt)">{{ usdt(detail.pnl.pnlUsdt) }}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="label">PnL BTC</div>
+                        <div class="value btc">{{ btc(detail.pnl.pnlBtc) }}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="label">BTC en mano</div>
+                        <div class="value btc">{{ btc(detail.pnl.btcHeld) }}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="label">Reserva USDT</div>
+                        <div class="value">{{ usdt(detail.pnl.usdtReserve) }}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="label">Operaciones</div>
+                        <div class="value">{{ detail.pnl.totalTrades }}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="label">Niveles operados</div>
+                        <div class="value">{{ detail.pnl.levelsTraded }} / {{ detail.set.levelCount }}</div>
+                    </div>
+                </div>
+
+                <div class="exhausted-panel" v-if="isExhausted">
+                    <p><strong>El precio super&oacute; el techo:</strong> todo el BTC se convirti&oacute; a USDT
+                        ({{ usdt(detail.set.usdtReserve) }} USDT en reserva). &iquest;Qu&eacute; haces?</p>
+                    <div class="actions" style="margin-top:0">
+                        <button class="btn" @click="resolveContinue">Continuar con estos niveles</button>
+                        <button class="btn ghost" @click="ns.show = !ns.show">Crear un conjunto nuevo&hellip;</button>
+                    </div>
+
+                    <div v-if="ns.show" style="margin-top:14px;border-top:1px solid var(--border);padding-top:6px">
+                        <div class="row">
+                            <div>
+                                <label>Nuevo piso</label>
+                                <input type="number" step="0.01" min="0" v-model.number="ns.floor">
+                            </div>
+                            <div>
+                                <label>Nuevo techo</label>
+                                <input type="number" step="0.01" min="0" v-model.number="ns.ceil">
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div>
+                                <label>Niveles</label>
+                                <input type="number" min="1" max="1000" v-model.number="ns.count">
+                            </div>
+                            <div>
+                                <label>BTC a repartir</label>
+                                <input type="number" step="0.00000001" min="0" v-model.number="ns.btc">
+                            </div>
+                        </div>
+                        <div class="pct-head">
+                            <label style="margin:0">% de BTC por nivel</label>
+                            <span class="pct-sum" :class="nsSumOk ? 'ok' : 'bad'">suma {{ nsSum.toFixed(2) }}%</span>
+                        </div>
+                        <div class="pct-grid">
+                            <input v-for="(p, i) in ns.percents" :key="i" type="number" step="any" min="0"
+                                   class="pct" v-model.number="ns.percents[i]">
+                        </div>
+                        <div class="actions">
+                            <button class="btn small ghost" @click="equalNs">Reparto equitativo</button>
+                        </div>
+                        <div class="actions">
+                            <button class="btn" @click="resolveNewSet">Crear conjunto nuevo</button>
+                        </div>
+                    </div>
+                </div>
+
+                <h3 style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+                    <span>Reporte de ganancias por nivel</span>
+                    <a class="btn small ghost" :href="`/api/grids/${detail.set.id}/report.csv`"
+                       style="text-decoration:none">Descargar CSV</a>
+                </h3>
+
+                <div class="cards">
+                    <div class="metric">
+                        <div class="label">Realizado USDT</div>
+                        <div class="value" :class="signClass(detail.report.realizedPnlUsdt)">{{ usdt(detail.report.realizedPnlUsdt) }}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="label">No realizado USDT</div>
+                        <div class="value" :class="signClass(detail.report.unrealizedPnlUsdt)">{{ usdt(detail.report.unrealizedPnlUsdt) }}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="label">Ganancia total USDT</div>
+                        <div class="value" :class="signClass(detail.report.totalPnlUsdt)">{{ usdt(detail.report.totalPnlUsdt) }}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="label">Ganancia total BTC</div>
+                        <div class="value btc">{{ btc(detail.report.totalPnlBtc) }}</div>
+                    </div>
+                </div>
+
+                <p class="muted" v-if="!detail.report.currentPrice">
+                    Sin precio actual todav&iacute;a: la ganancia no realizada se mostrar&aacute; cuando
+                    llegue el primer precio.
+                </p>
+
+                <div class="tbl-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Banda (USDT)</th>
+                                <th>%</th>
+                                <th>Estado</th>
+                                <th>Ops (C/V)</th>
+                                <th>BTC comprado</th>
+                                <th>BTC vendido</th>
+                                <th>Realizado USDT</th>
+                                <th>No realizado USDT</th>
+                                <th>Total USDT</th>
+                                <th>Total BTC</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="l in detail.report.levels" :key="l.levelIndex" :class="{ 'in-zone': inZone(l) }">
+                                <td>{{ l.levelIndex }}</td>
+                                <td>{{ usdt(l.lowerPrice) }} &ndash; {{ usdt(l.upperPrice) }}</td>
+                                <td>{{ fmt(l.weightPercent, 2) }}%</td>
+                                <td>
+                                    <span v-if="l.holding" class="badge hold">en BTC</span>
+                                    <span v-else class="badge cash">en USDT</span>
+                                    <span v-if="pendingAlertFor(l.levelIndex)" class="badge"
+                                          :class="pendingAlertFor(l.levelIndex).type === 'BUY' ? 'buy' : 'sell'">
+                                        {{ pendingAlertFor(l.levelIndex).type === 'BUY' ? 'compra' : 'venta' }}
+                                    </span>
+                                </td>
+                                <td>{{ l.buys }} / {{ l.sells }}</td>
+                                <td>{{ btc(l.btcBought) }}</td>
+                                <td>{{ btc(l.btcSold) }}</td>
+                                <td :class="signClass(l.realizedPnlUsdt)">{{ usdt(l.realizedPnlUsdt) }}</td>
+                                <td :class="signClass(l.unrealizedPnlUsdt)">{{ usdt(l.unrealizedPnlUsdt) }}</td>
+                                <td :class="signClass(l.totalPnlUsdt)">{{ usdt(l.totalPnlUsdt) }}</td>
+                                <td :class="signClass(l.totalPnlBtc)">{{ btc(l.totalPnlBtc) }}</td>
+                            </tr>
+                        </tbody>
+                        <tfoot>
+                            <tr>
+                                <td colspan="7"><strong>Total &middot; {{ detail.report.levelsTraded }} de {{ detail.set.levelCount }} niveles operados</strong></td>
+                                <td :class="signClass(detail.report.realizedPnlUsdt)"><strong>{{ usdt(detail.report.realizedPnlUsdt) }}</strong></td>
+                                <td :class="signClass(detail.report.unrealizedPnlUsdt)"><strong>{{ usdt(detail.report.unrealizedPnlUsdt) }}</strong></td>
+                                <td :class="signClass(detail.report.totalPnlUsdt)"><strong>{{ usdt(detail.report.totalPnlUsdt) }}</strong></td>
+                                <td :class="signClass(detail.report.totalPnlBtc)"><strong>{{ btc(detail.report.totalPnlBtc) }}</strong></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+
+                <h3>Niveles</h3>
+                <div class="tbl-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Banda (USDT)</th>
+                                <th>%</th>
+                                <th>BTC asignado</th>
+                                <th>Estado</th>
+                                <th>Precio entrada</th>
+                                <th>Ops</th>
+                                <th>PnL USDT</th>
+                                <th>PnL BTC</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="l in detail.pnl.levels" :key="l.id" :class="{ 'in-zone': inZone(l) }">
+                                <td>{{ l.levelIndex }}</td>
+                                <td>{{ usdt(l.lowerPrice) }} &ndash; {{ usdt(l.upperPrice) }}</td>
+                                <td>{{ fmt(l.weightPercent, 2) }}%</td>
+                                <td>{{ btc(l.btcAllocated) }}</td>
+                                <td>
+                                    <span v-if="l.holding" class="badge hold">en BTC</span>
+                                    <span v-else class="badge cash">en USDT</span>
+                                    <span v-if="pendingAlertFor(l.levelIndex)" class="badge"
+                                          :class="pendingAlertFor(l.levelIndex).type === 'BUY' ? 'buy' : 'sell'">
+                                        {{ pendingAlertFor(l.levelIndex).type === 'BUY' ? 'compra' : 'venta' }}
+                                    </span>
+                                </td>
+                                <td>{{ l.entryPrice ? usdt(l.entryPrice) : '—' }}</td>
+                                <td>{{ l.tradeCount }}</td>
+                                <td :class="signClass(l.pnlUsdt)">{{ usdt(l.pnlUsdt) }}</td>
+                                <td :class="signClass(l.pnlBtc)">{{ btc(l.pnlBtc) }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h3>Operaciones</h3>
+                <div class="tbl-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Nivel</th>
+                                <th>Lado</th>
+                                <th>Precio</th>
+                                <th>Cantidad BTC</th>
+                                <th>Importe USDT</th>
+                                <th>Comisi&oacute;n</th>
+                                <th>PnL USDT</th>
+                                <th>PnL BTC</th>
+                                <th>Fecha</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-if="!detail.trades.length">
+                                <td colspan="10" class="muted">Todav&iacute;a no hay operaciones.</td>
+                            </tr>
+                            <tr v-for="t in detail.trades" :key="t.id">
+                                <td>{{ t.id }}</td>
+                                <td>{{ t.levelIndex }}</td>
+                                <td><span class="badge" :class="t.side === 'BUY' ? 'buy' : 'sell'">{{ t.side }}</span></td>
+                                <td>{{ usdt(t.price) }}</td>
+                                <td>{{ btc(t.quantity) }}</td>
+                                <td>{{ usdt(t.amount) }}</td>
+                                <td>{{ usdt(t.fee) }}</td>
+                                <td :class="signClass(t.pnlUsdt)">{{ usdt(t.pnlUsdt) }}</td>
+                                <td :class="signClass(t.pnlBtc)">{{ btc(t.pnlBtc) }}</td>
+                                <td>{{ localDateTime(t.createdAt) }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+
+        <div id="toast" :class="toast.kind ? 'show ' + toast.kind : ''">{{ toast.message }}</div>
+    </div>
+
+    <script src="https://unpkg.com/vue@3.5.43/dist/vue.global.prod.js"></script>
+    <script src="/app.js"></script>
+</body>
+
+</html>

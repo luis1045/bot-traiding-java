@@ -1,0 +1,82 @@
+### ============================================================
+###  Flujo de prueba del bot de grillas BTCUSDT
+###  Uso en IntelliJ IDEA / VS Code (REST Client) / JetBrains:
+###    - Abre este archivo y pulsa el triangulo "Run" junto a cada peticion.
+###    - Ejecuta en orden de arriba a abajo.
+### ============================================================
+
+@base = http://localhost:8080
+
+### 1) Estado del bot
+GET {{base}}/api/bot/status
+
+### 2) Crear conjunto de niveles (piso, techo, n y % por nivel que suman 100)
+# @name crear
+POST {{base}}/api/grids
+Content-Type: application/json
+
+{
+  "floorPrice": 78000,
+  "ceilPrice": 88000,
+  "levelCount": 5,
+  "btcInventory": 0.5,
+  "usdtReserve": 100000,
+  "levelPercents": [10, 15, 20, 25, 30],
+  "feeRate": 0.001,
+  "startInBtc": true
+}
+
+### 3) Ver los niveles creados (banda, % y BTC asignado)
+GET {{base}}/api/grids/1/levels
+
+### 4) Subir el precio por encima del techo -> vende todo y queda AGOTADO
+POST {{base}}/api/bot/tick
+Content-Type: application/json
+
+{ "price": 89000 }
+
+### 5) Estado y ganancia consolidada (BTC y USDT)
+GET {{base}}/api/grids/1
+###
+GET {{base}}/api/grids/1/pnl
+
+### 6) El usuario decide CONTINUAR con los mismos niveles
+POST {{base}}/api/grids/1/resolve
+Content-Type: application/json
+
+{ "action": "CONTINUE" }
+
+### 7) Bajar el precio por debajo del piso -> recompran
+POST {{base}}/api/bot/tick
+Content-Type: application/json
+
+{ "price": 77000 }
+
+### 8) Historial de operaciones
+GET {{base}}/api/grids/1/trades
+
+### 9) Volver a superar el techo -> se agota de nuevo
+POST {{base}}/api/bot/tick
+Content-Type: application/json
+
+{ "price": 89000 }
+
+### 10) Crear un NUEVO conjunto heredando el efectivo
+POST {{base}}/api/grids/1/resolve
+Content-Type: application/json
+
+{
+  "action": "NEW_SET",
+  "floorPrice": 90000,
+  "ceilPrice": 100000,
+  "levelCount": 4,
+  "levelPercents": [40, 30, 20, 10]
+}
+
+### 11) Listar todos los conjuntos
+GET {{base}}/api/grids
+
+### 12) (Opcional) Encender el feed de precios en vivo
+POST {{base}}/api/bot/start
+###
+POST {{base}}/api/bot/stop
